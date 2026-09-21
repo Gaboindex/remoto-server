@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Panel de Control Remoto</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #121214;
+      color: #ffffff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    h1 { margin-bottom: 20px; color: #a855f7; }
+    .card-login {
+      background: #1e1e24;
+      padding: 24px;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+      display: flex;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    input {
+      padding: 12px;
+      font-size: 18px;
+      border-radius: 8px;
+      border: 1px solid #3f3f46;
+      background: #09090b;
+      color: #fff;
+      text-align: center;
+      width: 140px;
+      letter-spacing: 4px;
+    }
+    button {
+      padding: 12px 24px;
+      font-size: 16px;
+      font-weight: bold;
+      border: none;
+      border-radius: 8px;
+      background: #a855f7;
+      color: #fff;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover { background: #9333ea; }
+    .status {
+      margin-bottom: 16px;
+      font-size: 14px;
+      color: #a1a1aa;
+    }
+    /* Celular Virtual */
+    .phone-container {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+    }
+    .phone-frame {
+      border: 12px solid #27272a;
+      border-radius: 36px;
+      background-color: #000;
+      position: relative;
+      cursor: crosshair;
+      box-shadow: 0 0 30px rgba(168, 85, 247, 0.2);
+      user-select: none;
+    }
+    .phone-screen {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      color: #52525b;
+      font-size: 14px;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>📱 Control Remoto Web</h1>
+
+  <div class="card-login">
+    <input type="text" id="pinInput" maxlength="4" placeholder="PIN" />
+    <button onclick="conectar()">VINCULAR</button>
+  </div>
+
+  <div class="status" id="statusText">Ingresa el PIN de 4 dígitos mostrado en el celular.</div>
+
+  <div class="phone-container" id="phoneContainer">
+    <div class="phone-frame" id="phoneFrame">
+      <div class="phone-screen">
+        <p>📱 PANTALLA EN VIVO</p>
+        <p id="resInfo" style="font-size: 11px; margin-top: 8px;"></p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let ws;
+    let pin = '';
+    let realWidth = 1080;
+    let realHeight = 2400;
+
+    let isMouseDown = false;
+    let startX = 0;
+    let startY = 0;
+
+    function conectar() {
+      pin = document.getElementById('pinInput').value.trim();
+      if (pin.length !== 4) return alert('El PIN debe ser de 4 dígitos');
+
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${protocol}//${location.host}`);
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: 'CONECTAR_DESDE_WEB', pin: pin }));
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.type === 'CONEXION_EXITOSA') {
+          realWidth = data.width;
+          realHeight = data.height;
+
+          document.getElementById('statusText').innerText = `✅ Vinculado a celular (${realWidth}x${realHeight} px)`;
+          document.getElementById('statusText').style.color = '#4ade80';
+
+          configurarPantallaVirtual();
+        } else if (data.type === 'ERROR') {
+          document.getElementById('statusText').innerText = `❌ ${data.mensaje}`;
+          document.getElementById('statusText').style.color = '#f87171';
+        }
+      };
+    }
+
+    function configurarPantallaVirtual() {
+      const frame = document.getElementById('phoneFrame');
+      const container = document.getElementById('phoneContainer');
+
+      // Escalar la pantalla en la PC guardando la proporción real del celular
+      const displayHeight = 580; // Altura fija cómoda para PC
+      const displayWidth = Math.round((realWidth / realHeight) * displayHeight);
+
+      frame.style.width = `${displayWidth}px`;
+      frame.style.height = `${displayHeight}px`;
+
+      document.getElementById('resInfo').innerText = `Relación real: ${realWidth}x${realHeight}px`;
+      container.style.display = 'flex';
+
+      // Eventos del ratón para Clic y Deslizamiento (Swipe)
+      frame.onmousedown = (e) => {
+        isMouseDown = true;
+        const rect = frame.getBoundingClientRect();
+        startX = e.clientX - rect.left;
+        startY = e.clientY - rect.top;
+      };
+
+      frame.onmouseup = (e) => {
+        if (!isMouseDown) return;
+        isMouseDown = false;
+
+        const rect = frame.getBoundingClientRect();
+        const endX = e.clientX - rect.left;
+        const endY = e.clientY - rect.top;
+
+        const deltaX = Math.abs(endX - startX);
+        const deltaY = Math.abs(endY - startY);
+
+        // Si el movimiento fue menor a 5px, se considera un Clic simple
+        if (deltaX < 5 && deltaY < 5) {
+          const xReal = (startX / displayWidth) * realWidth;
+          const yReal = (startY / displayHeight) * realHeight;
+
+          ws.send(JSON.stringify({
+            type: 'ENVIAR_TOQUE',
+            pin: pin,
+            x: xReal,
+            y: yReal
+          }));
+        } else {
+          // Si hubo movimiento, se considera un Deslizamiento (Swipe)
+          const x1Real = (startX / displayWidth) * realWidth;
+          const y1Real = (startY / displayHeight) * realHeight;
+          const x2Real = (endX / displayWidth) * realWidth;
+          const y2Real = (endY / displayHeight) * realHeight;
+
+          ws.send(JSON.stringify({
+            type: 'ENVIAR_GESTO',
+            pin: pin,
+            xInicial: x1Real,
+            yInicial: y1Real,
+            xFinal: x2Real,
+            yFinal: y2Real,
+            duracion: 180
+          }));
+        }
+      };
+    }
+  </script>
+</body>
+</html>
