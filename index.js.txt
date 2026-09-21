@@ -1,0 +1,58 @@
+const { WebSocketServer, WebSocket } = require('ws');
+
+const PORT = process.env.PORT || 3000;
+const wss = new WebSocketServer({ port: PORT });
+
+// Guardaremos los dispositivos objetivo conectados indexados por su PIN
+// Ejemplo: dispositivos["4821"] = socket
+const dispositivos = {};
+
+console.log(`Servidor WebSocket iniciado en el puerto ${PORT}`);
+
+wss.on('connection', (ws) => {
+  let miPin = null;
+
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message.toString());
+
+      // 1. Un dispositivo se registra con su PIN como OBJETIVO (para ser controlado)
+      if (data.type === 'REGISTRAR_OBJETIVO') {
+        miPin = data.pin;
+        dispositivos[miPin] = ws;
+        console.log(`[REGISTRO] Dispositivo registrado con PIN: ${miPin}`);
+        ws.send(JSON.stringify({ type: 'STATUS', status: 'REGISTRADO' }));
+      }
+
+      // 2. El CONTROLADOR envía una orden de clic a un PIN específico
+      if (data.type === 'ENVIAR_TOQUE') {
+        const pinDestino = data.pin;
+        const targetSocket = dispositivos[pinDestino];
+
+        if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
+          // Reenviamos las coordenadas X e Y al celular objetivo
+          targetSocket.send(JSON.stringify({
+            type: 'EJECUTAR_TOQUE',
+            x: data.x,
+            y: data.y
+          }));
+          console.log(`[TOQUE] Orden enviada a PIN: ${pinDestino} -> X:${data.x}, Y:${data.y}`);
+        } else {
+          ws.send(JSON.stringify({
+            type: 'ERROR',
+            message: 'El dispositivo con ese PIN no está conectado o no existe.'
+          }));
+        }
+      }
+    } catch (e) {
+      console.error('Error al procesar el mensaje:', e);
+    }
+  });
+
+  ws.on('close', () => {
+    if (miPin && dispositivos[miPin] === ws) {
+      delete dispositivos[miPin];
+      console.log(`[DESCONECTADO] Dispositivo con PIN ${miPin} se ha desconectado`);
+    }
+  });
+});
