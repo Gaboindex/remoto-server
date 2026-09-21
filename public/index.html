@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Panel de Control Remoto Automático</title>
+  <title>Panel de Control Remoto</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -17,21 +17,29 @@
       padding: 20px;
     }
     h1 { margin-bottom: 20px; color: #a855f7; }
-    .panel-controles {
+    .card-login {
       background: #1e1e24;
-      padding: 15px 20px;
+      padding: 24px;
       border-radius: 12px;
       box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-      display: none;
+      display: flex;
       gap: 12px;
-      margin-bottom: 16px;
-      align-items: center;
-      justify-content: center;
-      flex-wrap: wrap;
+      margin-bottom: 24px;
+    }
+    input {
+      padding: 12px;
+      font-size: 18px;
+      border-radius: 8px;
+      border: 1px solid #3f3f46;
+      background: #09090b;
+      color: #fff;
+      text-align: center;
+      width: 140px;
+      letter-spacing: 4px;
     }
     button {
-      padding: 10px 20px;
-      font-size: 14px;
+      padding: 12px 24px;
+      font-size: 16px;
       font-weight: bold;
       border: none;
       border-radius: 8px;
@@ -41,13 +49,17 @@
       transition: background 0.2s;
     }
     button:hover { background: #9333ea; }
-    .btn-danger { background: #ef4444; }
-    .btn-danger:hover { background: #dc2626; }
-    .btn-success { background: #22c55e; }
-    .btn-success:hover { background: #16a34a; }
-    .status { margin-bottom: 16px; font-size: 14px; color: #fbbf24; font-weight: bold; }
-    
-    .phone-container { display: none; flex-direction: column; align-items: center; }
+    .status {
+      margin-bottom: 16px;
+      font-size: 14px;
+      color: #a1a1aa;
+    }
+    /* Celular Virtual */
+    .phone-container {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+    }
     .phone-frame {
       border: 12px solid #27272a;
       border-radius: 36px;
@@ -56,38 +68,49 @@
       cursor: crosshair;
       box-shadow: 0 0 30px rgba(168, 85, 247, 0.2);
       user-select: none;
-      overflow: hidden;
+      overflow: hidden; /* Evita desbordamientos de la imagen */
     }
+    /* Estilo del Monitor de Video */
     .phone-stream-img {
       width: 100%;
       height: 100%;
-      object-fit: fill;
-      pointer-events: none;
+      object-fit: fill; /* Ajusta la imagen enviada al marco virtual */
+      pointer-events: none; /* Permite que el click atraviese la imagen hacia el frame */
       display: block;
     }
     .phone-screen-placeholder {
       position: absolute;
-      top: 0; left: 0; width: 100%; height: 100%;
-      display: flex; flex-direction: column; justify-content: center; align-items: center;
-      color: #52525b; font-size: 14px; pointer-events: none;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      color: #52525b;
+      font-size: 14px;
+      pointer-events: none;
     }
   </style>
 </head>
-<body onload="iniciarSistemaDeMonitoreo()">
+<body>
 
-  <h1>📱 Panel de Control Automático</h1>
+  <h1>📱 Control Remoto Web</h1>
 
-  <div class="status" id="statusText">🔄 Buscando conexión y dispositivo...</div>
-
-  <!-- Panel de Interruptores Remotos -->
-  <div class="panel-controles" id="panelControles">
-    <button id="btnBypass" class="btn-success" onclick="alternarBypass()">Activar Bypass (Anti-Táctil)</button>
-    <button id="btnBotones" class="btn-success" onclick="alternarBotones()">Bloquear Power / Volumen</button>
+  <div class="card-login">
+    <input type="text" id="pinInput" maxlength="4" placeholder="PIN" />
+    <button onclick="conectar()">VINCULAR</button>
   </div>
+
+  <div class="status" id="statusText">Ingresa el PIN de 4 dígitos mostrado en el celular.</div>
 
   <div class="phone-container" id="phoneContainer">
     <div class="phone-frame" id="phoneFrame">
+      <!-- Monitor de Video en Vivo -->
       <img id="streamVideo" class="phone-stream-img" src="" alt="Cargando video..." />
+      
+      <!-- Placeholder mientras inicia la transmisión -->
       <div class="phone-screen-placeholder" id="placeholderText">
         <p>📱 ESPERANDO SEÑAL DE VIDEO</p>
         <p id="resInfo" style="font-size: 11px; margin-top: 8px;"></p>
@@ -96,7 +119,8 @@
   </div>
 
   <script>
-    let ws = null;
+    let ws;
+    let pin = '';
     let realWidth = 1080;
     let realHeight = 2400;
 
@@ -104,136 +128,52 @@
     let startX = 0;
     let startY = 0;
 
-    let bypassEstado = false;
-    let botonesEstado = false;
-    let loopVerificacion = null;
-    let pingInterval = null;
-
-    function iniciarSistemaDeMonitoreo() {
-      // Bucle agresivo cada 500ms que revisa si el socket está muerto y lo reconecta al instante
-      if (loopVerificacion) clearInterval(loopVerificacion);
-      
-      loopVerificacion = setInterval(() => {
-        if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
-          conectarWebSocket();
-        }
-      }, 500);
-
-      conectarWebSocket();
-    }
-
-    function conectarWebSocket() {
-      const statusEl = document.getElementById('statusText');
-      
-      // Evitamos reabrir si ya se está conectando
-      if (ws && ws.readyState === WebSocket.CONNECTING) return;
-
-      if (ws) {
-        try { ws.close(); } catch(e) {}
-        ws = null;
-      }
-
-      statusEl.innerText = `🔄 Buscando dispositivo activamente...`;
-      statusEl.style.color = '#fbbf24';
-      document.getElementById('panelControles').style.display = 'none';
+    function conectar() {
+      pin = document.getElementById('pinInput').value.trim();
+      if (pin.length !== 4) return alert('El PIN debe ser de 4 dígitos');
 
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      
-      try {
-        ws = new WebSocket(`${protocol}//${location.host}`);
-      } catch (e) {
-        return;
-      }
+      ws = new WebSocket(`${protocol}//${location.host}`);
 
       ws.onopen = () => {
-        statusEl.innerText = `🔄 Sincronizando comandos...`;
-        ws.send(JSON.stringify({ type: 'CONECTAR_DESDE_WEB_AUTO' }));
-
-        // Activar latido (Ping) cada 2 segundos para detectar caídas de Wi-Fi de inmediato
-        if (pingInterval) clearInterval(pingInterval);
-        pingInterval = setInterval(() => {
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'PING' }));
-          }
-        }, 2000);
+        ws.send(JSON.stringify({ type: 'CONECTAR_DESDE_WEB', pin: pin }));
       };
 
       ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
+        const data = JSON.parse(event.data);
 
-          if (data.type === 'CONEXION_EXITOSA') {
-            realWidth = data.width || 1080;
-            realHeight = data.height || 2400;
+        if (data.type === 'CONEXION_EXITOSA') {
+          realWidth = data.width;
+          realHeight = data.height;
 
-            statusEl.innerText = `✅ Conectado y en línea (${realWidth}x${realHeight} px)`;
-            statusEl.style.color = '#4ade80';
+          document.getElementById('statusText').innerText = `✅ Vinculado a celular (${realWidth}x${realHeight} px)`;
+          document.getElementById('statusText').style.color = '#4ade80';
 
-            document.getElementById('panelControles').style.display = 'flex';
-            configurarPantallaVirtual();
-          } 
-          else if (data.type === 'STREAM_FRAME') {
-            const imgElement = document.getElementById('streamVideo');
-            const placeholder = document.getElementById('placeholderText');
-            
-            if (imgElement && data.frame) {
-              imgElement.src = 'data:image/jpeg;base64,' + data.frame;
-              if (placeholder) placeholder.style.display = 'none';
-            }
-          } 
-          else if (data.type === 'ERROR') {
-            statusEl.innerText = `⚠️ ${data.mensaje} (Esperando al celular...)`;
-            statusEl.style.color = '#fbbf24';
+          configurarPantallaVirtual();
+        } 
+        // RECEPCIÓN DEL VIDEO EN TIEMPO REAL
+        else if (data.type === 'STREAM_FRAME') {
+          const imgElement = document.getElementById('streamVideo');
+          const placeholder = document.getElementById('placeholderText');
+          
+          if (imgElement && data.frame) {
+            imgElement.src = 'data:image/jpeg;base64,' + data.frame;
+            if (placeholder) placeholder.style.display = 'none'; // Ocultar el texto al recibir el video
           }
-        } catch(err) {}
+        } 
+        else if (data.type === 'ERROR') {
+          document.getElementById('statusText').innerText = `❌ ${data.mensaje}`;
+          document.getElementById('statusText').style.color = '#f87171';
+        }
       };
-
-      ws.onclose = () => {
-        if (pingInterval) clearInterval(pingInterval);
-        document.getElementById('panelControles').style.display = 'none';
-      };
-
-      ws.onerror = () => {
-        if (pingInterval) clearInterval(pingInterval);
-        try { ws.close(); } catch(e) {}
-      };
-    }
-
-    function alternarBypass() {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      bypassEstado = !bypassEstado;
-      ws.send(JSON.stringify({ type: 'SET_BYPASS', activar: bypassEstado }));
-
-      const btn = document.getElementById('btnBypass');
-      if (bypassEstado) {
-        btn.innerText = 'Desactivar Bypass (Anti-Táctil)';
-        btn.className = 'btn-danger';
-      } else {
-        btn.innerText = 'Activar Bypass (Anti-Táctil)';
-        btn.className = 'btn-success';
-      }
-    }
-
-    function alternarBotones() {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      botonesEstado = !botonesEstado;
-      ws.send(JSON.stringify({ type: 'SET_BOTONES', activar: botonesEstado }));
-
-      const btn = document.getElementById('btnBotones');
-      if (botonesEstado) {
-        btn.innerText = 'Desbloquear Power / Volumen';
-        btn.className = 'btn-danger';
-      } else {
-        btn.innerText = 'Bloquear Power / Volumen';
-        btn.className = 'btn-success';
-      }
     }
 
     function configurarPantallaVirtual() {
       const frame = document.getElementById('phoneFrame');
       const container = document.getElementById('phoneContainer');
 
-      const displayHeight = 580;
+      // Escalar la pantalla en la PC guardando la proporción real del celular
+      const displayHeight = 580; // Altura fija cómoda para PC
       const displayWidth = Math.round((realWidth / realHeight) * displayHeight);
 
       frame.style.width = `${displayWidth}px`;
@@ -242,6 +182,7 @@
       document.getElementById('resInfo').innerText = `Relación real: ${realWidth}x${realHeight}px`;
       container.style.display = 'flex';
 
+      // Eventos del ratón para Clic y Deslizamiento (Swipe)
       frame.onmousedown = (e) => {
         isMouseDown = true;
         const rect = frame.getBoundingClientRect();
@@ -253,8 +194,6 @@
         if (!isMouseDown) return;
         isMouseDown = false;
 
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
         const rect = frame.getBoundingClientRect();
         const endX = e.clientX - rect.left;
         const endY = e.clientY - rect.top;
@@ -262,18 +201,33 @@
         const deltaX = Math.abs(endX - startX);
         const deltaY = Math.abs(endY - startY);
 
+        // Si el movimiento fue menor a 5px, se considera un Clic simple
         if (deltaX < 5 && deltaY < 5) {
           const xReal = (startX / displayWidth) * realWidth;
           const yReal = (startY / displayHeight) * realHeight;
 
-          ws.send(JSON.stringify({ type: 'ENVIAR_TOQUE', x: xReal, y: yReal }));
+          ws.send(JSON.stringify({
+            type: 'ENVIAR_TOQUE',
+            pin: pin,
+            x: xReal,
+            y: yReal
+          }));
         } else {
+          // Si hubo movimiento, se considera un Deslizamiento (Swipe)
           const x1Real = (startX / displayWidth) * realWidth;
           const y1Real = (startY / displayHeight) * realHeight;
           const x2Real = (endX / displayWidth) * realWidth;
           const y2Real = (endY / displayHeight) * realHeight;
 
-          ws.send(JSON.stringify({ type: 'ENVIAR_GESTO', xInicial: x1Real, yInicial: y1Real, xFinal: x2Real, yFinal: y2Real, duracion: 180 }));
+          ws.send(JSON.stringify({
+            type: 'ENVIAR_GESTO',
+            pin: pin,
+            xInicial: x1Real,
+            yInicial: y1Real,
+            xFinal: x2Real,
+            yFinal: y2Real,
+            duracion: 180
+          }));
         }
       };
     }
