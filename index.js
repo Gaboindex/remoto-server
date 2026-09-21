@@ -10,7 +10,7 @@ const wss = new WebSocket.Server({ server });
 // Servir archivos estáticos (el panel web en public/)
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Almacén de dispositivos objetivo: { pin: { ws, width, height } }
+// Almacén de dispositivos objetivo: { pin: { phoneWs, webWs, width, height } }
 const objetivos = {};
 
 function generarPIN() {
@@ -19,6 +19,7 @@ function generarPIN() {
 
 wss.on('connection', (ws) => {
   let pinAsignado = null;
+  let tipoCliente = null; // 'CELULAR' o 'WEB'
 
   ws.on('message', (message) => {
     try {
@@ -26,9 +27,12 @@ wss.on('connection', (ws) => {
 
       // 1. EL CELULAR SOLICITA UN PIN Y REGISTRA SU RESOLUCIÓN
       if (data.type === 'SOLICITAR_PIN_OBJETIVO') {
+        tipoCliente = 'CELULAR';
         pinAsignado = generarPIN();
+        
         objetivos[pinAsignado] = {
-          ws: ws,
+          phoneWs: ws,
+          webWs: null, // Se asignará cuando la PC se conecte
           width: data.width || 1080,
           height: data.height || 2400
         };
@@ -40,15 +44,20 @@ wss.on('connection', (ws) => {
         console.log(`[CELULAR CONECTADO] PIN: ${pinAsignado} | Resolución: ${data.width}x${data.height}`);
       }
 
-      // 2. LA WEB O CONTROLADOR CONSULTA LAS DIMENSIONES DEL CELULAR POR PIN
+      // 2. LA WEB O CONTROLADOR SE CONECTA USANDO EL PIN
       else if (data.type === 'CONECTAR_DESDE_WEB') {
-        const objetivo = objetivos[data.pin];
+        tipoCliente = 'WEB';
+        pinAsignado = data.pin;
+        const objetivo = objetivos[pinAsignado];
+
         if (objetivo) {
+          objetivo.webWs = ws; // Guardamos la conexión de la PC
           ws.send(JSON.stringify({
             type: 'CONEXION_EXITOSA',
             width: objetivo.width,
             height: objetivo.height
           }));
+          console.log(`[PANEL WEB CONECTADO] Vinculado al PIN: ${pinAsignado}`);
         } else {
           ws.send(JSON.stringify({
             type: 'ERROR',
@@ -57,11 +66,22 @@ wss.on('connection', (ws) => {
         }
       }
 
-      // 3. REENVIAR ACCIONES (TOQUE O GESTO) AL CELULAR
+      // 3. REENVIAR ACCIONES TÁCTILES (DEL WEB AL CELULAR)
       else if (data.type === 'ENVIAR_TOQUE' || data.type === 'ENVIAR_GESTO' || data.type === 'PING') {
         const objetivo = objetivos[data.pin];
-        if (objetivo && objetivo.ws.readyState === WebSocket.OPEN) {
-          objetivo.ws.send(JSON.stringify(data));
+        if (objetivo && objetivo.phoneWs && objetivo.phoneWs.readyState === WebSocket.OPEN) {
+          objetivo.phoneWs.send(JSON.stringify(data));
+        }
+      }
+
+      // 4. REENVIAR STREAM DE VIDEO (DEL CELULAR AL WEB) [¡ESTO FALTABA!]
+      else if (data.type === 'STREAM_FRAME') {
+        const objetivo = objetivos[data.pin];
+        if (objetivo && objetivo.webWs && objetivo.webWs.readyState === WebSocket.OPEN) {
+          objetivo.webWs.send(JSON.stringify({
+            type: 'STREAM_FRAME',
+            frame: data.frame
+          }));
         }
       }
     } catch (err) {
@@ -71,8 +91,15 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     if (pinAsignado && objetivos[pinAsignado]) {
-      delete objetivos[pinAsignado];
-      console.log(`[CELULAR DESCONECTADO] PIN ${pinAsignado} liberado.`);
+      if (tipoCliente === 'CELULAR') {
+        console.log(`[CELULAR DESCONECTADO] PIN ${pinAsignado} liberado.`);
+        delete objetivos[pinAsignado];
+      } else if (tipoCliente === 'WEB') {
+        console.log(`[PANEL WEB DESCONECTADO] Del PIN ${pinAsignado}.`);
+        if (objetivos[pinAsignado]) {
+          objetivos[pinAsignado].webWs = null;
+        }
+      }
     }
   });
 });
