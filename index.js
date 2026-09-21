@@ -1,58 +1,66 @@
-const { WebSocketServer, WebSocket } = require('ws');
+const WebSocket = require('ws');
 
-const PORT = process.env.PORT || 3000;
-const wss = new WebSocketServer({ port: PORT });
+// Render asigna el puerto mediante la variable de entorno PORT
+const PORT = process.env.PORT || 8080;
+const wss = new WebSocket.Server({ port: PORT });
 
-// Guardaremos los dispositivos objetivo conectados indexados por su PIN
-// Ejemplo: dispositivos["4821"] = socket
-const dispositivos = {};
+// Mapa para guardar los dispositivos objetivos conectados: PIN -> WebSocket
+const dispositivos = new Map();
 
-console.log(`Servidor WebSocket iniciado en el puerto ${PORT}`);
+// Genera un PIN único de 4 dígitos que no esté en uso
+function generarPINUnico() {
+  let pin;
+  do {
+    pin = Math.floor(1000 + Math.random() * 9000).toString();
+  } while (dispositivos.has(pin));
+  return pin;
+}
 
 wss.on('connection', (ws) => {
-  let miPin = null;
+  let miPinAsignado = null;
 
   ws.on('message', (message) => {
     try {
-      const data = JSON.parse(message.toString());
+      const data = JSON.parse(message);
 
-      // 1. Un dispositivo se registra con su PIN como OBJETIVO (para ser controlado)
-      if (data.type === 'REGISTRAR_OBJETIVO') {
-        miPin = data.pin;
-        dispositivos[miPin] = ws;
-        console.log(`[REGISTRO] Dispositivo registrado con PIN: ${miPin}`);
-        ws.send(JSON.stringify({ type: 'STATUS', status: 'REGISTRADO' }));
+      // 1. EL CELULAR OBJETIVO SOLICITA UN PIN A RENDER
+      if (data.type === 'SOLICITAR_PIN_OBJETIVO') {
+        miPinAsignado = generarPINUnico();
+        dispositivos.set(miPinAsignado, ws);
+        
+        ws.send(JSON.stringify({
+          type: 'PIN_ASIGNADO',
+          pin: miPinAsignado
+        }));
+        console.log(`PIN ${miPinAsignado} asignado por Render.`);
       }
 
-      // 2. El CONTROLADOR envía una orden de clic a un PIN específico
-      if (data.type === 'ENVIAR_TOQUE') {
-        const pinDestino = data.pin;
-        const targetSocket = dispositivos[pinDestino];
+      // 2. EL CONTROLADOR ENVÍA ACCIONES (PING O TOQUES) USANDO ESE PIN
+      if (data.type === 'ENVIAR_TOQUE' || data.type === 'PING') {
+        const objetivoWs = dispositivos.get(data.pin);
 
-        if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
-          // Reenviamos las coordenadas X e Y al celular objetivo
-          targetSocket.send(JSON.stringify({
-            type: 'EJECUTAR_TOQUE',
-            x: data.x,
-            y: data.y
-          }));
-          console.log(`[TOQUE] Orden enviada a PIN: ${pinDestino} -> X:${data.x}, Y:${data.y}`);
+        if (objetivoWs && objetivoWs.readyState === WebSocket.OPEN) {
+          objetivoWs.send(JSON.stringify(data));
+          console.log(`Orden ${data.action || data.type} retransmitida al PIN ${data.pin}`);
         } else {
           ws.send(JSON.stringify({
             type: 'ERROR',
-            message: 'El dispositivo con ese PIN no está conectado o no existe.'
+            message: 'El dispositivo con este PIN no está conectado.'
           }));
         }
       }
     } catch (e) {
-      console.error('Error al procesar el mensaje:', e);
+      console.error('Error procesando mensaje:', e);
     }
   });
 
+  // Si se desconecta el celular objetivo, liberamos el PIN
   ws.on('close', () => {
-    if (miPin && dispositivos[miPin] === ws) {
-      delete dispositivos[miPin];
-      console.log(`[DESCONECTADO] Dispositivo con PIN ${miPin} se ha desconectado`);
+    if (miPinAsignado) {
+      dispositivos.delete(miPinAsignado);
+      console.log(`PIN ${miPinAsignado} liberado.`);
     }
   });
 });
+
+console.log(`Servidor WebSocket activo corriendo en el puerto ${PORT}`);
