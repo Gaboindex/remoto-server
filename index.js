@@ -74,10 +74,17 @@ wss.on('connection', (ws) => {
         }
       }
 
-      // 4. REENVIAR STREAM DE VIDEO (DEL CELULAR AL WEB) [¡ESTO FALTABA!]
+      // 4. REENVIAR STREAM DE VIDEO (DEL CELULAR AL WEB) OPTIMIZADO PARA FLUJO EN TIEMPO REAL
       else if (data.type === 'STREAM_FRAME') {
         const objetivo = objetivos[data.pin];
         if (objetivo && objetivo.webWs && objetivo.webWs.readyState === WebSocket.OPEN) {
+          
+          // Filtro de fluidez: si hay más de 64KB acumulados en la cola de red de la PC,
+          // descartamos este frame para que nunca se atrase el video.
+          if (objetivo.webWs.bufferedAmount > 65536) {
+            return;
+          }
+
           objetivo.webWs.send(JSON.stringify({
             type: 'STREAM_FRAME',
             frame: data.frame
