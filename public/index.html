@@ -90,7 +90,7 @@
 
   <div class="card-login">
     <input type="text" id="pinInput" maxlength="4" placeholder="PIN" />
-    <button onclick="conectar()">VINCULAR</button>
+    <button onclick="iniciarConexionManual()">VINCULAR</button>
   </div>
 
   <div class="status" id="statusText">Ingresa el PIN de 4 dígitos mostrado en el celular.</div>
@@ -112,7 +112,7 @@
   </div>
 
   <script>
-    let ws;
+    let ws = null;
     let pin = '';
     let realWidth = 1080;
     let realHeight = 2400;
@@ -123,15 +123,29 @@
 
     let bypassEstado = false;
     let botonesEstado = false;
+    let intentoReconexionTimer = null;
+    let vinculadoManual = false;
 
-    function conectar() {
-      pin = document.getElementById('pinInput').value.trim();
-      if (pin.length !== 4) return alert('El PIN debe ser de 4 dígitos');
+    function iniciarConexionManual() {
+      const inputVal = document.getElementById('pinInput').value.trim();
+      if (inputVal.length !== 4) return alert('El PIN debe ser de 4 dígitos');
+      pin = inputVal;
+      vinculadoManual = true;
+      conectarWebSocket();
+    }
+
+    function conectarWebSocket() {
+      if (!vinculadoManual) return;
+
+      if (ws) {
+        try { ws.close(); } catch(e) {}
+      }
 
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${protocol}//${location.host}`);
 
       ws.onopen = () => {
+        document.getElementById('statusText').innerText = `🔄 Sincronizando con PIN ${pin}...`;
         ws.send(JSON.stringify({ type: 'CONECTAR_DESDE_WEB', pin: pin }));
       };
 
@@ -139,10 +153,10 @@
         const data = JSON.parse(event.data);
 
         if (data.type === 'CONEXION_EXITOSA') {
-          realWidth = data.width;
-          realHeight = data.height;
+          realWidth = data.width || 1080;
+          realHeight = data.height || 2400;
 
-          document.getElementById('statusText').innerText = `✅ Vinculado a celular (${realWidth}x${realHeight} px)`;
+          document.getElementById('statusText').innerText = `✅ Vinculado y conectado (${realWidth}x${realHeight} px)`;
           document.getElementById('statusText').style.color = '#4ade80';
 
           document.getElementById('panelControles').style.display = 'flex';
@@ -162,9 +176,25 @@
           document.getElementById('statusText').style.color = '#f87171';
         }
       };
+
+      ws.onclose = () => {
+        if (!vinculadoManual) return;
+        document.getElementById('statusText').innerText = `⚠️ Conexión perdida. Reconectando en 3 segundos...`;
+        document.getElementById('statusText').style.color = '#fbbf24';
+        
+        clearTimeout(intentoReconexionTimer);
+        intentoReconexionTimer = setTimeout(() => {
+          conectarWebSocket();
+        }, 3000);
+      };
+
+      ws.onerror = () => {
+        try { ws.close(); } catch(e) {}
+      };
     }
 
     function alternarBypass() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return alert('No hay conexión activa con el servidor.');
       bypassEstado = !bypassEstado;
       ws.send(JSON.stringify({
         type: 'SET_BYPASS',
@@ -183,6 +213,7 @@
     }
 
     function alternarBotones() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return alert('No hay conexión activa con el servidor.');
       botonesEstado = !botonesEstado;
       ws.send(JSON.stringify({
         type: 'SET_BOTONES',
@@ -223,6 +254,8 @@
       frame.onmouseup = (e) => {
         if (!isMouseDown) return;
         isMouseDown = false;
+
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
         const rect = frame.getBoundingClientRect();
         const endX = e.clientX - rect.left;
