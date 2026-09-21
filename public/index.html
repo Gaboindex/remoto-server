@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Panel de Control Remoto Avanzado</title>
+  <title>Panel de Control Remoto Automático</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -17,28 +17,17 @@
       padding: 20px;
     }
     h1 { margin-bottom: 20px; color: #a855f7; }
-    .card-login, .panel-controles {
+    .panel-controles {
       background: #1e1e24;
-      padding: 20px;
+      padding: 15px 20px;
       border-radius: 12px;
       box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-      display: flex;
+      display: none;
       gap: 12px;
       margin-bottom: 16px;
       align-items: center;
       justify-content: center;
-    }
-    .panel-controles { display: none; flex-wrap: wrap; }
-    input {
-      padding: 10px;
-      font-size: 18px;
-      border-radius: 8px;
-      border: 1px solid #3f3f46;
-      background: #09090b;
-      color: #fff;
-      text-align: center;
-      width: 140px;
-      letter-spacing: 4px;
+      flex-wrap: wrap;
     }
     button {
       padding: 10px 20px;
@@ -84,16 +73,11 @@
     }
   </style>
 </head>
-<body>
+<body onload="conectarWebSocket()">
 
-  <h1>📱 Panel de Control Remoto</h1>
+  <h1>📱 Panel de Control Automático</h1>
 
-  <div class="card-login">
-    <input type="text" id="pinInput" maxlength="4" placeholder="PIN" />
-    <button onclick="iniciarConexionManual()">VINCULAR</button>
-  </div>
-
-  <div class="status" id="statusText">Ingresa el PIN de 4 dígitos mostrado en el celular.</div>
+  <div class="status" id="statusText">🔄 Conectando con el servidor...</div>
 
   <!-- Panel de Interruptores Remotos -->
   <div class="panel-controles" id="panelControles">
@@ -113,7 +97,6 @@
 
   <script>
     let ws = null;
-    let pin = '';
     let realWidth = 1080;
     let realHeight = 2400;
 
@@ -124,19 +107,8 @@
     let bypassEstado = false;
     let botonesEstado = false;
     let intentoReconexionTimer = null;
-    let vinculadoManual = false;
-
-    function iniciarConexionManual() {
-      const inputVal = document.getElementById('pinInput').value.trim();
-      if (inputVal.length !== 4) return alert('El PIN debe ser de 4 dígitos');
-      pin = inputVal;
-      vinculadoManual = true;
-      conectarWebSocket();
-    }
 
     function conectarWebSocket() {
-      if (!vinculadoManual) return;
-
       if (ws) {
         try { ws.close(); } catch(e) {}
       }
@@ -145,8 +117,8 @@
       ws = new WebSocket(`${protocol}//${location.host}`);
 
       ws.onopen = () => {
-        document.getElementById('statusText').innerText = `🔄 Sincronizando con PIN ${pin}...`;
-        ws.send(JSON.stringify({ type: 'CONECTAR_DESDE_WEB', pin: pin }));
+        document.getElementById('statusText').innerText = `🔄 Vinculando con el dispositivo...`;
+        ws.send(JSON.stringify({ type: 'CONECTAR_DESDE_WEB_AUTO' }));
       };
 
       ws.onmessage = (event) => {
@@ -156,7 +128,7 @@
           realWidth = data.width || 1080;
           realHeight = data.height || 2400;
 
-          document.getElementById('statusText').innerText = `✅ Vinculado y conectado (${realWidth}x${realHeight} px)`;
+          document.getElementById('statusText').innerText = `✅ Conectado al celular (${realWidth}x${realHeight} px)`;
           document.getElementById('statusText').style.color = '#4ade80';
 
           document.getElementById('panelControles').style.display = 'flex';
@@ -172,14 +144,13 @@
           }
         } 
         else if (data.type === 'ERROR') {
-          document.getElementById('statusText').innerText = `❌ ${data.mensaje}`;
+          document.getElementById('statusText').innerText = `❌ ${data.mensaje} (Reintentando...)`;
           document.getElementById('statusText').style.color = '#f87171';
         }
       };
 
       ws.onclose = () => {
-        if (!vinculadoManual) return;
-        document.getElementById('statusText').innerText = `⚠️ Conexión perdida. Reconectando en 3 segundos...`;
+        document.getElementById('statusText').innerText = `⚠️ Desconectado. Reconectando automáticamente...`;
         document.getElementById('statusText').style.color = '#fbbf24';
         
         clearTimeout(intentoReconexionTimer);
@@ -194,13 +165,9 @@
     }
 
     function alternarBypass() {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return alert('No hay conexión activa con el servidor.');
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
       bypassEstado = !bypassEstado;
-      ws.send(JSON.stringify({
-        type: 'SET_BYPASS',
-        pin: pin,
-        activar: bypassEstado
-      }));
+      ws.send(JSON.stringify({ type: 'SET_BYPASS', activar: bypassEstado }));
 
       const btn = document.getElementById('btnBypass');
       if (bypassEstado) {
@@ -213,13 +180,9 @@
     }
 
     function alternarBotones() {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return alert('No hay conexión activa con el servidor.');
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
       botonesEstado = !botonesEstado;
-      ws.send(JSON.stringify({
-        type: 'SET_BOTONES',
-        pin: pin,
-        activar: botonesEstado
-      }));
+      ws.send(JSON.stringify({ type: 'SET_BOTONES', activar: botonesEstado }));
 
       const btn = document.getElementById('btnBotones');
       if (botonesEstado) {
@@ -268,14 +231,14 @@
           const xReal = (startX / displayWidth) * realWidth;
           const yReal = (startY / displayHeight) * realHeight;
 
-          ws.send(JSON.stringify({ type: 'ENVIAR_TOQUE', pin: pin, x: xReal, y: yReal }));
+          ws.send(JSON.stringify({ type: 'ENVIAR_TOQUE', x: xReal, y: yReal }));
         } else {
           const x1Real = (startX / displayWidth) * realWidth;
           const y1Real = (startY / displayHeight) * realHeight;
           const x2Real = (endX / displayWidth) * realWidth;
           const y2Real = (endY / displayHeight) * realHeight;
 
-          ws.send(JSON.stringify({ type: 'ENVIAR_GESTO', pin: pin, xInicial: x1Real, yInicial: y1Real, xFinal: x2Real, yFinal: y2Real, duracion: 180 }));
+          ws.send(JSON.stringify({ type: 'ENVIAR_GESTO', xInicial: x1Real, yInicial: y1Real, xFinal: x2Real, yFinal: y2Real, duracion: 180 }));
         }
       };
     }
