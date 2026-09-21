@@ -45,7 +45,7 @@
     .btn-danger:hover { background: #dc2626; }
     .btn-success { background: #22c55e; }
     .btn-success:hover { background: #16a34a; }
-    .status { margin-bottom: 16px; font-size: 14px; color: #a1a1aa; }
+    .status { margin-bottom: 16px; font-size: 14px; color: #fbbf24; font-weight: bold; }
     
     .phone-container { display: none; flex-direction: column; align-items: center; }
     .phone-frame {
@@ -73,11 +73,11 @@
     }
   </style>
 </head>
-<body onload="conectarWebSocket()">
+<body onload="iniciarSistemaDeMonitoreo()">
 
   <h1>📱 Panel de Control Automático</h1>
 
-  <div class="status" id="statusText">🔄 Conectando con el servidor...</div>
+  <div class="status" id="statusText">🔄 Buscando conexión y dispositivo...</div>
 
   <!-- Panel de Interruptores Remotos -->
   <div class="panel-controles" id="panelControles">
@@ -106,60 +106,95 @@
 
     let bypassEstado = false;
     let botonesEstado = false;
-    let intentoReconexionTimer = null;
+    let loopVerificacion = null;
+    let pingInterval = null;
+
+    function iniciarSistemaDeMonitoreo() {
+      // Bucle agresivo cada 500ms que revisa si el socket está muerto y lo reconecta al instante
+      if (loopVerificacion) clearInterval(loopVerificacion);
+      
+      loopVerificacion = setInterval(() => {
+        if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+          conectarWebSocket();
+        }
+      }, 500);
+
+      conectarWebSocket();
+    }
 
     function conectarWebSocket() {
+      const statusEl = document.getElementById('statusText');
+      
+      // Evitamos reabrir si ya se está conectando
+      if (ws && ws.readyState === WebSocket.CONNECTING) return;
+
       if (ws) {
         try { ws.close(); } catch(e) {}
+        ws = null;
       }
 
+      statusEl.innerText = `🔄 Buscando dispositivo activamente...`;
+      statusEl.style.color = '#fbbf24';
+      document.getElementById('panelControles').style.display = 'none';
+
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(`${protocol}//${location.host}`);
+      
+      try {
+        ws = new WebSocket(`${protocol}//${location.host}`);
+      } catch (e) {
+        return;
+      }
 
       ws.onopen = () => {
-        document.getElementById('statusText').innerText = `🔄 Vinculando con el dispositivo...`;
+        statusEl.innerText = `🔄 Sincronizando comandos...`;
         ws.send(JSON.stringify({ type: 'CONECTAR_DESDE_WEB_AUTO' }));
+
+        // Activar latido (Ping) cada 2 segundos para detectar caídas de Wi-Fi de inmediato
+        if (pingInterval) clearInterval(pingInterval);
+        pingInterval = setInterval(() => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'PING' }));
+          }
+        }, 2000);
       };
 
       ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
+        try {
+          const data = JSON.parse(event.data);
 
-        if (data.type === 'CONEXION_EXITOSA') {
-          realWidth = data.width || 1080;
-          realHeight = data.height || 2400;
+          if (data.type === 'CONEXION_EXITOSA') {
+            realWidth = data.width || 1080;
+            realHeight = data.height || 2400;
 
-          document.getElementById('statusText').innerText = `✅ Conectado al celular (${realWidth}x${realHeight} px)`;
-          document.getElementById('statusText').style.color = '#4ade80';
+            statusEl.innerText = `✅ Conectado y en línea (${realWidth}x${realHeight} px)`;
+            statusEl.style.color = '#4ade80';
 
-          document.getElementById('panelControles').style.display = 'flex';
-          configurarPantallaVirtual();
-        } 
-        else if (data.type === 'STREAM_FRAME') {
-          const imgElement = document.getElementById('streamVideo');
-          const placeholder = document.getElementById('placeholderText');
-          
-          if (imgElement && data.frame) {
-            imgElement.src = 'data:image/jpeg;base64,' + data.frame;
-            if (placeholder) placeholder.style.display = 'none';
+            document.getElementById('panelControles').style.display = 'flex';
+            configurarPantallaVirtual();
+          } 
+          else if (data.type === 'STREAM_FRAME') {
+            const imgElement = document.getElementById('streamVideo');
+            const placeholder = document.getElementById('placeholderText');
+            
+            if (imgElement && data.frame) {
+              imgElement.src = 'data:image/jpeg;base64,' + data.frame;
+              if (placeholder) placeholder.style.display = 'none';
+            }
+          } 
+          else if (data.type === 'ERROR') {
+            statusEl.innerText = `⚠️ ${data.mensaje} (Esperando al celular...)`;
+            statusEl.style.color = '#fbbf24';
           }
-        } 
-        else if (data.type === 'ERROR') {
-          document.getElementById('statusText').innerText = `❌ ${data.mensaje} (Reintentando...)`;
-          document.getElementById('statusText').style.color = '#f87171';
-        }
+        } catch(err) {}
       };
 
       ws.onclose = () => {
-        document.getElementById('statusText').innerText = `⚠️ Desconectado. Reconectando automáticamente...`;
-        document.getElementById('statusText').style.color = '#fbbf24';
-        
-        clearTimeout(intentoReconexionTimer);
-        intentoReconexionTimer = setTimeout(() => {
-          conectarWebSocket();
-        }, 3000);
+        if (pingInterval) clearInterval(pingInterval);
+        document.getElementById('panelControles').style.display = 'none';
       };
 
       ws.onerror = () => {
+        if (pingInterval) clearInterval(pingInterval);
         try { ws.close(); } catch(e) {}
       };
     }
